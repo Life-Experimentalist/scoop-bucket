@@ -1,0 +1,51 @@
+# Copyright 2026 VKrishna04
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pull the rendered manifest from the dev-prune repository.
+#
+# It pulls rather than being pushed to, deliberately: a push would need a cross-repository
+# token stored as a secret in dev-prune, and the only thing that secret would ever do is
+# copy a public file from one public repository to another. A scheduled fetch needs no
+# credential at all, and `workflow_dispatch` makes it immediate when a release cannot wait
+# for the next run.
+name: Sync manifest
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch the rendered manifest
+        run: |
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/Life-Experimentalist/dev-prune/main/packaging/scoop/dev-prune.json \
+            -o bucket/dev-prune.json
+          # Scoop reads this file with a JSON parser and reports nothing useful when it is
+          # malformed, so prove it parses and carries a version before committing it.
+          python3 -c "import json,sys; d=json.load(open('bucket/dev-prune.json')); sys.exit(0 if d.get('version') else 1)"
+
+      - name: Commit if it changed
+        run: |
+          if git diff --quiet -- bucket/dev-prune.json; then
+            echo "Manifest already matches upstream."
+            exit 0
+          fi
+          version=$(python3 -c "import json; print(json.load(open('bucket/dev-prune.json'))['version'])")
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/dev-prune.json
+          git commit -m "dev-prune ${version}"
+          git push
